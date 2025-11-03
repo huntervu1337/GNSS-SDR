@@ -1,0 +1,62 @@
+# Build directories
+build/
+.build/
+out/
+/bin/
+/lib/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+.vs/
+
+# Compiled Object files
+*.o
+*.obj
+*.lo
+*.slo
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+
+# Dependency directories
+deps/
+third_party/
+
+# Log files
+*.log
+gmon.out
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python related
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
