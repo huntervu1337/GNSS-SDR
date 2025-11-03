@@ -1,4 +1,5 @@
 import math
+import sys
 
 # Import functions from read_rinex_nav.py
 from read_rinex_nav import *
