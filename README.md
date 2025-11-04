@@ -1,2 +1,3 @@
 # Global Navigation Satellite Systems software-defined receiver
-## Run main.py
+## Currently for personal use only
+### Run main.py
