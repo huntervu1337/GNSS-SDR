@@ -29,6 +29,7 @@ def read_rinex_nav(file_path):
     """
     Đọc file GPS Navigation RINEX v3.0x  và trích xuất
     các tham số ephemeris cần thiết để tính toán tọa độ vệ tinh
+    Phiên bản này đã sửa lỗi để xử lý các file .nav có dòng trống hoặc không mong muốn.
 
     Args:
         file_path (str): Đường dẫn đến file RINEX navigation.
@@ -63,12 +64,15 @@ def read_rinex_nav(file_path):
 
                 try:
                     # Phân tích dòng 1
-                    sat_prn = line1[0:3].strip() # Đảm bảo không có khoảng trắng thừa
-                    if not sat_prn or sat_prn[0] not in 'GECJIRS': # Kiểm tra PRN hợp lệ và hệ thống
-                        print(f"Warning: Skipping line with potentially invalid SV ID: '{line1.strip()}'", file=sys.stderr)
-                        # Đọc tiếp 7 dòng còn lại (nếu có) để bỏ qua bản ghi này
-                        for _ in range(7): f.readline()
-                        continue
+                    sat_prn = line1[0:3].strip() 
+
+                    # *** SỬA LỖI CHÍNH (BUG 3) ***
+                    # Nếu dòng này không phải là một PRN hợp lệ, 
+                    # chỉ bỏ qua dòng NÀY và tiếp tục tìm.
+                    # KHÔNG bỏ qua 7 dòng tiếp theo.
+                    if not sat_prn or sat_prn[0] not in 'GECJIRS': 
+                        # print(f"Warning: Skipping non-record line: '{line1.strip()}'", file=sys.stderr)
+                        continue # Chỉ bỏ qua dòng này, lặp lại vòng while
 
                     year = int(line1[4:8])
                     month = int(line1[9:11])
@@ -86,28 +90,41 @@ def read_rinex_nav(file_path):
 
                     # Đọc 7 dòng orbit parameters
                     params_list = []
-                    incomplete_record = False
                     for i_line in range(7):
                         line = f.readline()
                         if not line: # Nếu hết file giữa chừng
-                            print(f"Warning: Incomplete record for {sat_prn} at {epoch_time}. Reached EOF.", file=sys.stderr)
-                            incomplete_record = True
-                            break # Thoát khỏi vòng lặp đọc 7 dòng
+                            raise EOFError(f"Incomplete record for {sat_prn}. Reached EOF.")
+                        
+                        # Xử lý các dòng trống (nếu có) BÊN TRONG một bản ghi
+                        if not line.strip():
+                            params_list.extend([None, None, None, None])
+                            continue
 
                         # Lấy 4 tham số trên mỗi dòng orbit
                         for k in range(4, 80, 19):
-                            chunk = line[k:k+19]
-                            params_list.append(_parse_float(chunk)) # Dùng _parse_float xử lý D và khoảng trắng
-
-                    if incomplete_record:
-                        break # Thoát khỏi vòng lặp đọc chính nếu file bị cắt
+                            if k < len(line): # Đảm bảo dòng đủ dài
+                                chunk = line[k:min(k+19, len(line))]
+                            else:
+                                chunk = "" # Nếu dòng quá ngắn
+                            params_list.append(_parse_float(chunk))
+                    
+                    # --- Kiểm tra các tham số quan trọng (BUG 5) ---
+                    # Kiểm tra xem các giá trị BẮT BUỘC có bị None không
+                    critical_indices = [3, 5, 7, 8, 9, 10, 11, 12, 14, 15, 16] # M0, e, sqrt_a, Toe, etc.
+                    
 
                     # --- Kiểm tra số lượng tham số đọc được ---
                     # Cần ít nhất 17 tham số orbit (đến i_dot) từ dòng 2-6
                     # Chuẩn RINEX v3 có thể có tới 28 tham số (hết dòng 8)
                     if len(params_list) < 17:
-                         print(f"Warning: Incomplete parameter list ({len(params_list)} found, expected at least 17) for {sat_prn} at {epoch_time}. Skipping record.", file=sys.stderr)
-                         continue # Bỏ qua bản ghi này
+                         raise ValueError(f"Incomplete parameter list ({len(params_list)} < 17)")
+
+                    if sv_clock_bias is None or sv_clock_drift is None or sv_clock_drift_rate is None:
+                         raise ValueError(f"Clock parameter is None.")
+
+                    for i in critical_indices:
+                        if params_list[i] is None:
+                            raise ValueError(f"Critical parameter {i} ('{params_list[i]}') is None.")
 
                     # --- Gán tham số vào dictionary theo tên chuẩn ---
                     # Thứ tự tham số trong list tương ứng với thứ tự trong file RINEX v3
@@ -151,15 +168,14 @@ def read_rinex_nav(file_path):
                     # Thêm vào dictionary chính
                     ephemeris_data[sat_prn].append(epoch_params)
 
-                except (ValueError, IndexError, TypeError) as e:
-                    print(f"Error parsing record near line: '{line1.strip()}'. Error: {e}", file=sys.stderr)
-                    # Cố gắng bỏ qua bản ghi lỗi bằng cách đọc hết 7 dòng còn lại (nếu có)
-                    try:
-                        for _ in range(7): f.readline()
-                    except:
-                        pass # Không làm gì nếu hết file khi đang cố bỏ qua
-                    continue # Chuyển sang dòng tiếp theo có thể là header của bản ghi mới
-
+                # *** SỬA LỖI CHÍNH (BUG 2) ***
+                except (ValueError, IndexError, TypeError, AttributeError, EOFError) as e:
+                    # Nếu CÓ LỖI khi đang đọc 8 dòng (vd: EOF, parse int/float lỗi,...)
+                    # Báo lỗi và BỎ QUA bản ghi này.
+                    # Vòng lặp while True sẽ tự động đọc dòng tiếp theo
+                    # để tìm 1 header mới. KHÔNG CẦN skip 7 dòng.
+                    print(f"Warning: Skipping corrupted record starting with '{line1.strip()}'. Error: {e}", file=sys.stderr)
+                    continue 
     except FileNotFoundError:
         print(f"Error: File not found at {file_path}", file=sys.stderr)
         return None
@@ -173,7 +189,7 @@ def read_rinex_nav(file_path):
 # --- Ví dụ Sử dụng ---
 if __name__ == "__main__":
     # Đường dẫn đến file navigation
-    rinex_file = "nav.nav"
+    rinex_file = "2908-nav-base.nav"
 
     print(f"Attempting to read RINEX file: {rinex_file}")
     nav_data = read_rinex_nav(rinex_file)
@@ -182,7 +198,7 @@ if __name__ == "__main__":
         print("\nSuccessfully parsed RINEX data.")
         print(f"Found ephemeris for {len(nav_data)} satellites: {sorted(nav_data.keys())}")
 
-        # In ephemeris cho một vệ tinh ví dụ, vd: 'G01'
+        # In ephemeris cho một vệ tinh ví dụ, vd: 'G05'
         example_sat = 'G05' # Thay đổi nếu muốn xem vệ tinh khác
         if example_sat in nav_data:
             print(f"\nExample Ephemeris for {example_sat} (first epoch found):")
@@ -195,7 +211,7 @@ if __name__ == "__main__":
                 value = first_epoch.get(key) # Dùng get để tránh lỗi nếu key thiếu
                 if value is not None:
                     if isinstance(value, float):
-                        print(f"  {key:<12}: {value:.14E}")
+                        print(f"  {key:<12}: {value:.11E}")
                     else:
                         print(f"  {key:<12}: {value}")
                 else:
