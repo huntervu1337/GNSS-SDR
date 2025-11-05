@@ -140,8 +140,8 @@ def calculate_satellite_position(eph, t_gps_sow):
 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":
-    # !!! QUAN TRỌNG: Thay đổi đường dẫn này đến file .nav của bạn !!!
-    rinex_file = 'test.nav' # Ví dụ: 'brdc2970.25n'
+    
+    rinex_file = '2908-nav-base.nav' # Đường dẫn đến file nav
 
     print(f"Đang đọc file RINEX: {rinex_file}")
     nav_data = read_rinex_nav(rinex_file)
