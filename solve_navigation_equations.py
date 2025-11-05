@@ -85,8 +85,8 @@ def solve_navigation_equations(epoch_data: Dict[str, Any], initial_pos: List[flo
         correction_magnitude = np.linalg.norm(x_correction[:3])
         
         if correction_magnitude < CONVERGENCE_LIMIT_METERS:
-            # print(f"Hội tụ sau {i+1} vòng lặp.")
+            print(f"Hội tụ sau {i+1} vòng lặp.")
             return current_solution
 
-    # print(f"Cảnh báo: Không hội tụ sau {MAX_ITERATIONS} vòng lặp cho epoch {epoch_data['time_utc']}.")
+    print(f"Cảnh báo: Không hội tụ sau {MAX_ITERATIONS} vòng lặp cho epoch {epoch_data['time_utc']}.")
     return current_solution

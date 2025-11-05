@@ -180,7 +180,7 @@ def prepare_basic_solver_inputs(nav_file: str, obs_file: str) -> List[Dict[str, 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":
     
-    NAV_FILE = 'nav.nav' # File .nav 
+    NAV_FILE = '2908-nav-base.nav' # File .nav 
     OBS_FILE = 'test.obs' # File .obs
 
     # Chạy hàm chuẩn bị dữ liệu
