@@ -17,7 +17,7 @@ if __name__ == "__main__":
 
     if solver_data:
         # 2. Lấy dữ liệu của epoch đầu tiên
-        first_epoch_data = solver_data[5]
+        first_epoch_data = solver_data[0]
         print(f"\n--- BẮT ĐẦU GIẢI HỆ PHƯƠNG TRÌNH CHO EPOCH ĐẦU TIÊN ---")
         print(f"Thời gian: {first_epoch_data['time_utc']}")
         print(f"Dự đoán ban đầu (X, Y, Z): {APPROX_POS_XYZ}")
