@@ -27,6 +27,11 @@ def datetime_to_gps_sow(dt_utc: datetime.datetime) -> Tuple[int, float]:
     Lưu ý: Giờ GPS không có giây nhuận. Tính đến 2025 (năm trong file test.obs),
     Giờ GPS chạy trước UTC 18 giây (GPS = UTC + 18s).
     """
+    """
+    Theo chuẩn RINEX v3, thời gian ghi nhận trong file Observation (các dòng bắt đầu bằng >),
+    thường là thời gian UTC. Còn thời gian trong file Navigation là thời gian GPS
+    Do đó, code cần cộng thêm 18 giây để chuyển từ hệ UTC (của file Obs) sang hệ GPS (file Nav).
+    """
     # Mốc thời gian GPS: 1980-01-06 00:00:00 UTC
     gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
     
@@ -155,7 +160,7 @@ def prepare_basic_solver_inputs(nav_file: str, obs_file: str) -> List[Dict[str, 
 
             # 7. Tính toán vị trí vệ tinh (X, Y, Z) TẠI t_s_sow
             # Đây là (xs_i, ys_i, zs_i)
-            (X, Y, Z) = calculate_satellite_position(eph_to_use, t_s_sow)
+            (X, Y, Z, dt_sat) = calculate_satellite_position(eph_to_use, t_s_sow)
             
             if X is None:
                 continue # Bỏ qua nếu tính toán lỗi
@@ -164,7 +169,8 @@ def prepare_basic_solver_inputs(nav_file: str, obs_file: str) -> List[Dict[str, 
             sat_data = {
                 "prn": prn,
                 "pseudorange": rho_i,     # (rho_i)
-                "sat_pos_ecef": (X, Y, Z) # (xs_i, ys_i, zs_i)
+                "sat_pos_ecef": (X, Y, Z), # (xs_i, ys_i, zs_i)
+                "sat_clock_corr_meters": c * dt_sat 
             }
             current_epoch_inputs["satellites"].append(sat_data)
 
@@ -201,3 +207,4 @@ if __name__ == "__main__":
             print(f"    Sat. Pos (X_s):       {sat['sat_pos_ecef'][0]:12.3f} m")
             print(f"    Sat. Pos (Y_s):       {sat['sat_pos_ecef'][1]:12.3f} m")
             print(f"    Sat. Pos (Z_s):       {sat['sat_pos_ecef'][2]:12.3f} m")
+            print(f"    Sat. Clock correction:{sat['sat_clock_corr_meters'] * 1e9 / c:12.3f} ns")
