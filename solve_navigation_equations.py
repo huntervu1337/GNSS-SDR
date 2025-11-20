@@ -39,27 +39,29 @@ def solve_navigation_equations(epoch_data: Dict[str, Any], initial_pos: List[flo
         
         # --- 2. Xây dựng ma trận H và véc-tơ y ---
         for j, sat in enumerate(satellites):
-            rho_i = sat['pseudorange']        # Pseudorange đo được (đã biết)
+            rho_raw = sat['pseudorange']        # Pseudorange đo được thực tế (đã biết)
             xs_i, ys_i, zs_i = sat['sat_pos_ecef'] # Vị trí vệ tinh (đã biết)
+            c_dt_s = sat['sat_clock_corr_meters'] # Lượng hiệu chỉnh đồng hồ vệ tinh (c * dt_s)
             
-            # Tính khoảng cách hình học dự đoán (r_i)
-            r_i_predicted = math.sqrt(
+            # Tính khoảng cách hình học dự đoán (Geometric Range) (r_i)
+            r_i = math.sqrt(
                 (xs_i - x_r)**2 +
                 (ys_i - y_r)**2 +
                 (zs_i - z_r)**2
             )
             
-            # Tính pseudorange dự đoán (rho_predicted) 
-            rho_predicted = r_i_predicted + c_dt_r
+            # Tính pseudorange dự đoán (Modeled Pseudorange) (rho_modeled) 
+            rho_modeled = r_i + c_dt_r - c_dt_s
             
-            # Xây dựng véc-tơ y (chênh lệch đo đạc) 
+            # 3. Tính Residual (chênh lệch đo đạc)
+            # Xây dựng véc-tơ y = Observed - Modeled
             # y = rho_thực_tế - rho_dự_đoán
-            y[j] = rho_i - rho_predicted
+            y[j] = rho_raw - rho_modeled
             
             # Xây dựng hàng thứ j của ma trận H
-            H[j, 0] = (x_r - xs_i) / r_i_predicted
-            H[j, 1] = (y_r - ys_i) / r_i_predicted
-            H[j, 2] = (z_r - zs_i) / r_i_predicted
+            H[j, 0] = (x_r - xs_i) / r_i
+            H[j, 1] = (y_r - ys_i) / r_i
+            H[j, 2] = (z_r - zs_i) / r_i
             H[j, 3] = 1.0  # Đạo hàm riêng theo c*dt_r
 
         # --- 3. Giải hệ phương trình tuyến tính ---
