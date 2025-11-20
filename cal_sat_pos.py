@@ -1,5 +1,6 @@
 import math
 import sys
+import datetime
 
 # Import functions from read_rinex_nav.py
 from read_rinex_nav import *
@@ -11,6 +12,21 @@ MU_GPS = 3.986005e14
 OMEGA_E_DOT = 7.2921151467e-5
 # Tốc độ ánh sáng (m/s)
 c = 2.99792458e8
+# Hằng số hiệu chỉnh tương đối (s/m^0.5)
+F = -4.442807633e-10
+
+def _datetime_to_sow(dt):
+    """Hàm phụ trợ: Chuyển đổi datetime sang GPS Second of Week (SOW)"""
+    # Mốc GPS: 6/1/1980
+    gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    
+    delta = dt - gps_epoch
+    # Lưu ý: Không cần cộng giây nhuận ở đây nếu mục đích chỉ là lấy phần lẻ trong tuần
+    # Tuy nhiên, để nhất quán với thời gian hệ thống, ta tính tổng giây
+    total_sec = delta.total_seconds()
+    return total_sec % 604800.0
 
 def calculate_satellite_position(eph, t_gps_sow):
     """
@@ -45,6 +61,17 @@ def calculate_satellite_position(eph, t_gps_sow):
         cic = eph['Cic']
         cis = eph['Cis']
         toe = eph['Toe']      # Thời gian tham chiếu Ephemeris (SOW)
+
+        # Tham số đồng hồ
+        a0 = eph['a0']
+        a1 = eph['a1']
+        a2 = eph['a2']
+        tgd = eph.get('TGD', 0.0) # Total Group Delay (quan trọng cho đơn tần L1)
+        if tgd is None: tgd = 0.0
+
+        # Thời gian tham chiếu đồng hồ (Toc). 
+        # Trong RINEX NAV, Epoch ở dòng 1 thường là Toc.
+        toc = _datetime_to_sow(eph['epoch'])
 
         # --- 1. Tính toán thời gian (t_k) ---
         # t_k là thời gian chênh lệch so với thời gian tham chiếu t_oe
@@ -129,14 +156,38 @@ def calculate_satellite_position(eph, t_gps_sow):
         Y_k = x_k_prime * sin_Omegak + y_k_prime * cos_ik * cos_Omegak
         Z_k = y_k_prime * sin_ik
 
-        return (X_k, Y_k, Z_k)
+        # ===========================================================
+        # --- TÍNH HIỆU CHỈNH ĐỒNG HỒ (CLOCK CORRECTION) ---
+        # ===========================================================
+        
+        # 1. Thời gian tính từ Toc
+        dt_clk = t_gps_sow - toc
+        if dt_clk > 302400: dt_clk -= 604800
+        elif dt_clk < -302400: dt_clk += 604800
+
+        # 2. Hiệu chỉnh đa thức (Polynomial Clock Correction)
+        # dt_bias = a0 + a1*dt + a2*dt^2
+        dts_poly = a0 + a1 * dt_clk + a2 * (dt_clk**2)
+
+        # 3. Hiệu chỉnh thuyết tương đối (Relativistic Correction)
+        # Do quỹ đạo elip, đồng hồ vệ tinh chạy nhanh/chậm theo vị trí
+        dts_rel = F * e * sqrt_a * math.sin(E_k)
+
+        # 4. Total Group Delay (TGD)
+        # Quan trọng với người dùng đơn tần (L1 C/A)
+        dts_tgd = tgd
+
+        # Tổng hợp: dt_sat = Poly + Relativistic - TGD
+        dt_sat = dts_poly + dts_rel - dts_tgd
+
+        return (X_k, Y_k, Z_k, dt_sat)
 
     except (KeyError, TypeError) as e:
         print(f"Lỗi: Thiếu hoặc tham số ephemeris không hợp lệ - {e}", file=sys.stderr)
-        return (None, None, None)
+        return (None, None, None, None)
     except Exception as e:
         print(f"Lỗi trong quá trình tính toán vị trí vệ tinh: {e}", file=sys.stderr)
-        return (None, None, None)
+        return (None, None, None, None)
 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":
@@ -169,13 +220,14 @@ if __name__ == "__main__":
             print(f"Thời gian tính toán (t): {t_calc_sow} SOW")
 
             # Gọi hàm tính toán
-            (X, Y, Z) = calculate_satellite_position(eph_to_use, t_calc_sow)
+            (X, Y, Z, dt_sat) = calculate_satellite_position(eph_to_use, t_calc_sow)
 
             if X is not None:
                 print("\nKết quả tọa độ ECEF (X, Y, Z) (đơn vị: mét):")
                 print(f"X: {X:,.3f} m")
                 print(f"Y: {Y:,.3f} m")
                 print(f"Z: {Z:,.3f} m")
+                print(f"Satellite clock correction: {dt_sat * 1e9} ns")
                 
                 # Tính toán khoảng cách từ tâm Trái Đất để kiểm tra
                 distance = math.sqrt(X**2 + Y**2 + Z**2) / 1000.0 # đổi sang km
