@@ -1,188 +1,96 @@
 import math
 import datetime
 import sys
-import collections
-from typing import List, Dict, Any, Optional, Tuple
+from read_rinex_nav import read_rinex_nav
+from read_rinex_obs import read_rinex_obs
+from cal_sat_pos import calculate_satellite_position
 
-# Import các đã viết từ các file .py
-try:
-    from read_rinex_nav import read_rinex_nav
-    from read_rinex_obs import read_rinex_obs
-    from cal_sat_pos import calculate_satellite_position
-except ImportError as e:
-    print(f"Lỗi: Không tìm thấy file thư viện. {e}", file=sys.stderr)
-    print("Vui lòng đảm bảo các file read_rinex_nav.py, read_rinex_obs.py, và cal_sat_pos.py ở cùng thư mục.")
-    sys.exit(1)
+c = 2.99792458e8
+
+def datetime_to_gps_sow(dt):
+    gps_epoch = datetime.datetime(1980,1,6,tzinfo=datetime.timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    diff = dt - gps_epoch
+    sow = diff.total_seconds() % 604800.0
+    week = int(diff.total_seconds() // 604800.0)
+    return week, sow
 
 
-# --- Hằng số (từ cal_sat_pos.py và lý thuyết) ---
-c = 2.99792458e8            # Tốc độ ánh sáng (m/s) 
-
-# --- CÁC HÀM PHỤ TRỢ ---
-
-def datetime_to_gps_sow(dt_utc: datetime.datetime) -> Tuple[int, float]:
-    """
-    Chuyển đổi datetime sang GPS Second of Week (SOW).
-    
-    QUAN TRỌNG: 
-    - Nếu input là UTC, cần cộng giây nhuận.
-    - Nếu input LÀ GPS TIME (như trong file RINEX OBS có thẻ 'GPS'), KHÔNG CỘNG giây nhuận.
-    
-    Dựa vào header file test.obs: "TIME OF FIRST OBS ... GPS"
-    => Dữ liệu này đã là GPS Time.
-    """
-    # Mốc thời gian GPS: 1980-01-06 00:00:00
-    gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
-    
-    if dt_utc.tzinfo is None:
-        dt_utc = dt_utc.replace(tzinfo=datetime.timezone.utc)
-
-    # Tính khoảng cách thời gian
-    time_diff = dt_utc - gps_epoch
-    total_seconds = time_diff.total_seconds()
-    
-    # --- SỬA LỖI 1: BỎ CỘNG GIÂY NHUẬN ---
-    # Vì file OBS của bạn đã ghi giờ GPS, nên không cộng 18s nữa.
-    # Nếu file là UTC thì mới cộng.
-    # total_gps_seconds = total_seconds + 18.0  <-- SAI với file này
-    total_gps_seconds = total_seconds 
-    
-    SECONDS_IN_WEEK = 604800.0 
-    
-    gps_week = int(total_gps_seconds // SECONDS_IN_WEEK)
-    gps_sow = total_gps_seconds % SECONDS_IN_WEEK
-    
-    return (gps_week, gps_sow)
-
-def find_best_ephemeris(eph_list: List[Dict[str, Any]], t_s_sow: float) -> Optional[Dict[str, Any]]:
-    """
-    Tìm bản ghi ephemeris (eph) tốt nhất từ một danh sách cho
-    thời điểm truyền tín hiệu (t_s_sow).
-    "Tốt nhất" được định nghĩa là có 'Toe' (Time of Ephemeris) gần nhất 
-    với 't_s_sow'
-    """
-    best_eph = None
-    min_delta_t = float('inf') # Vô cùng
-
+def find_best_ephemeris(eph_list, t_s):
+    best = None
+    mindt = 999999
     for eph in eph_list:
-        toe = eph.get('Toe')
-        if toe is None:
-            continue
-            
-        # Tính chênh lệch thời gian, xử lý week crossover
-        delta_t = abs(t_s_sow - toe)
-        if delta_t > 302400:  # Nửa tuần
-            delta_t = 604800 - delta_t
-            
-        if delta_t < min_delta_t:
-            min_delta_t = delta_t
-            best_eph = eph
-            
-    # Theo chuẩn, ephemeris thường chỉ có giá trị trong ~4 giờ (14400s)
-    # quanh Toe
-    if min_delta_t > 14400:
-        return None  # Không có ephemeris nào đủ gần
+        toe = eph["Toe"]
+        dt = abs(t_s - toe)
+        if dt > 302400: dt = 604800 - dt
+        if dt < mindt:
+            mindt = dt
+            best = eph
+    if mindt > 14400: 
+        return None
+    return best
 
-    return best_eph
 
-# --- HÀM TỔNG HỢP DỮ LIỆU ---
+def prepare_basic_solver_inputs(nav_file, obs_file):
+    nav = read_rinex_nav(nav_file)
+    obs = read_rinex_obs(obs_file)
 
-def prepare_basic_solver_inputs(nav_file: str, obs_file: str) -> List[Dict[str, Any]]:
-    """
-    Kết hợp file NAV và OBS để chuẩn bị dữ liệu đầu vào cơ bản
-    cho bộ giải 4 ẩn (chưa bao gồm clock correction).
-    """
-    print("Đang đọc file Navigation (.nav)...")
-    nav_data = read_rinex_nav(nav_file)
-    if not nav_data:
-        print("Không thể đọc file Navigation.")
-        return []
+    epochs = []
 
-    print("Đang đọc file Observation (.obs)...")
-    obs_data = read_rinex_obs(obs_file)
-    if not obs_data:
-        print("Không thể đọc file Observation.")
-        return []
+    for epoch in obs:
+        dt = epoch["time"]
+        _, t_r = datetime_to_gps_sow(dt)
 
-    print(f"Đã đọc {len(obs_data)} epochs từ file Observation. Bắt đầu xử lý...")
-    
-    solver_ready_epochs = []
-    
-    # Lặp qua từng mốc thời gian (epoch) trong file observation
-    for epoch in obs_data:
-        t_receiver_utc = epoch['time']
-        
-        # Chuyển thời gian máy thu (UTC) sang Giây của Tuần (SOW)
-        try:
-            (gps_week, t_r_sow) = datetime_to_gps_sow(t_receiver_utc)
-        except Exception as e:
-            print(f"Lỗi chuyển đổi thời gian cho epoch {t_receiver_utc}: {e}", file=sys.stderr)
-            continue
-            
-        current_epoch_inputs = {
-            "time_utc": t_receiver_utc,
-            "time_sow": t_r_sow,
+        epoch_struct = {
+            "time_utc": dt,
+            "time_sow": t_r,
             "satellites": []
         }
-        
-        # Lặp qua từng vệ tinh quan sát được tại epoch này
-        for prn, observations in epoch['observations'].items():
-            
-            # --- CHỌN LỌC DỮ LIỆU ---
-            
-            # 1. Chỉ xử lý vệ tinh GPS ('G')
-            if not prn.startswith('G'):
-                continue
-                
-            # 2. Kiểm tra có dữ liệu ephemeris cho vệ tinh này không
-            if prn not in nav_data:
-                continue
-                
-            # 3. Lấy pseudorange (C1C) 
-            obs_c1c = observations.get('C1C')
-            if not obs_c1c:
-                continue # Bỏ qua nếu không có pseudorange C1C
 
-            rho_i = obs_c1c['value'] # Đây là rho_i
-            
-            # --- TÍNH TOÁN ---
-            
-            # 4. Ước tính thời gian truyền tín hiệu (travel time)
-            t_travel = rho_i / c  # ~0.07 giây
-            
-            # 5. Ước tính thời gian phát tín hiệu (transmit time) t_s
-            # Đây là thời điểm chúng ta cần tính vị trí vệ tinh
-            t_s_sow = t_r_sow - t_travel
-            
-            # 6. Tìm ephemeris tốt nhất (gần t_s_sow nhất)
-            eph_to_use = find_best_ephemeris(nav_data[prn], t_s_sow)
-            if not eph_to_use:
-                continue # Bỏ qua nếu không có ephemeris hợp lệ
+        for prn, o in epoch["observations"].items():
 
-            # 7. Tính toán vị trí vệ tinh (X, Y, Z) TẠI t_s_sow
-            # Đây là (xs_i, ys_i, zs_i)
-            (X, Y, Z, dt_sat) = calculate_satellite_position(eph_to_use, t_s_sow)
-            
+            if not prn.startswith("G"):
+                continue
+            if prn not in nav:
+                continue
+
+            if "C1C" not in o:
+                continue
+
+            rho_raw = o["C1C"]["value"]
+
+            # TGD-trừ trong pseudorange (single frequency)
+            best_eph = find_best_ephemeris(nav[prn], t_r)
+            if not best_eph: 
+                continue
+
+            tgd = best_eph.get("TGD", 0.0) or 0.0
+
+            rho_corr = rho_raw - c*tgd   # ĐÃ SỬA
+
+            t_travel = rho_corr / c
+            t_s = t_r - t_travel
+
+            eph = find_best_ephemeris(nav[prn], t_s)
+            if not eph:
+                continue
+
+            X,Y,Z, dt_sat = calculate_satellite_position(eph, t_s)
             if X is None:
-                continue # Bỏ qua nếu tính toán lỗi
+                continue
 
-            # 8. Lưu trữ dữ liệu đã sẵn sàng cho bộ giải
-            sat_data = {
+            epoch_struct["satellites"].append({
                 "prn": prn,
-                "pseudorange": rho_i,     # (rho_i)
-                "sat_pos_ecef": (X, Y, Z), # (xs_i, ys_i, zs_i)
-                "sat_clock_corr_meters": c * dt_sat 
-            }
-            current_epoch_inputs["satellites"].append(sat_data)
+                "pseudorange": rho_corr,
+                "sat_pos_ecef": (X,Y,Z),
+                "sat_clock_corr_meters": c * dt_sat
+            })
 
-        # --- KẾT THÚC EPOCH ---
-        # Chỉ lưu epoch này nếu có đủ 4 vệ tinh để giải
-        if len(current_epoch_inputs["satellites"]) >= 4:
-            solver_ready_epochs.append(current_epoch_inputs)
-        
-    print(f"Hoàn tất. Đã chuẩn bị dữ liệu cho {len(solver_ready_epochs)} epochs (có >= 4 vệ tinh GPS).")
-    return solver_ready_epochs
+        if len(epoch_struct["satellites"]) >= 4:
+            epochs.append(epoch_struct)
 
+    return epochs
 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":

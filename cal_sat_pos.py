@@ -1,193 +1,121 @@
-import math
+import math 
 import sys
 import datetime
-
-# Import functions from read_rinex_nav.py
 from read_rinex_nav import *
 
-# --- Hằng số (từ Sách ESA GNSS / WGS-84) ---
-# Hằng số hấp dẫn Trái Đất (m^3/s^2) - WGS-84
 MU_GPS = 3.986005e14
-# Tốc độ quay Trái Đất (rad/s) - WGS-84
 OMEGA_E_DOT = 7.2921151467e-5
-# Tốc độ ánh sáng (m/s)
 c = 2.99792458e8
-# Hằng số hiệu chỉnh tương đối (s/m^0.5)
 F = -4.442807633e-10
 
 def _datetime_to_sow(dt):
-    """Hàm phụ trợ: Chuyển đổi datetime sang GPS Second of Week (SOW)"""
-    # Mốc GPS: 6/1/1980
     gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
-    
     delta = dt - gps_epoch
-    # Lưu ý: Không cần cộng giây nhuận ở đây nếu mục đích chỉ là lấy phần lẻ trong tuần
-    # Tuy nhiên, để nhất quán với thời gian hệ thống, ta tính tổng giây
     total_sec = delta.total_seconds()
     return total_sec % 604800.0
 
-def calculate_satellite_position(eph, t_gps_sow):
+
+def calculate_satellite_position(eph, t_sv):
     """
-    Tính toán tọa độ ECEF (X, Y, Z) của vệ tinh tại một thời điểm cụ thể
-    dựa trên thuật toán từ Sách ESA GNSS Vol 1, Mục 3.3.1/3.3.2.
-
-    Args:
-        eph (dict): Một dictionary chứa ephemeris cho MỘT epoch của vệ tinh,
-                    được trả về từ hàm read_rinex_nav_ephemeris_merged.
-        t_gps_sow (float): Thời điểm cần tính toán (time of interest)
-                           tính bằng Giây của Tuần GPS (GPS Seconds of Week).
-
-    Returns:
-        tuple: Một tuple (X, Y, Z) tọa độ vệ tinh trong hệ ECEF (đơn vị: mét),
-               hoặc (None, None, None) nếu tính toán thất bại.
+    Tính vị trí vệ tinh tại t_sv (satellite transmission time)
+    + ĐÃ SỬA: clock correction dùng t_sv
+    + ĐÃ THÊM: Earth rotation correction
+    + ĐÃ SỬA: không trừ TGD trong dt_sat
     """
     try:
-        # --- 0. Lấy các tham số cần thiết từ ephemeris ---
+        # ======= LẤY THAM SỐ =======
         sqrt_a = eph['sqrt_a']
-        e = eph['e']          # Độ lệch tâm
-        m0 = eph['M0']        # Dị thường trung bình tại t_oe
-        omega = eph['omega']  # Argument of Perigee
-        i0 = eph['i0']        # Độ nghiêng quỹ đạo tại t_oe
-        omega0 = eph['Omega0'] # Kinh độ điểm mọc tại t_oe
-        delta_n = eph['Delta_n'] # Hiệu chỉnh chuyển động trung bình
-        i_dot = eph['i_dot']     # Tốc độ thay đổi độ nghiêng
-        omega_dot = eph['Omega_dot'] # Tốc độ thay đổi kinh độ điểm mọc
-        cuc = eph['Cuc']
-        cus = eph['Cus']
-        crc = eph['Crc']
-        crs = eph['Crs']
-        cic = eph['Cic']
-        cis = eph['Cis']
-        toe = eph['Toe']      # Thời gian tham chiếu Ephemeris (SOW)
+        e = eph['e']
+        m0 = eph['M0']
+        omega = eph['omega']
+        i0 = eph['i0']
+        omega0 = eph['Omega0']
+        delta_n = eph['Delta_n']
+        i_dot = eph['i_dot']
+        omega_dot = eph['Omega_dot']
+        cuc = eph['Cuc']; cus = eph['Cus']
+        crc = eph['Crc']; crs = eph['Crs']
+        cic = eph['Cic']; cis = eph['Cis']
+        toe = eph['Toe']
 
-        # Tham số đồng hồ
-        a0 = eph['a0']
-        a1 = eph['a1']
-        a2 = eph['a2']
-        tgd = eph.get('TGD', 0.0) # Total Group Delay (quan trọng cho đơn tần L1)
-        if tgd is None: tgd = 0.0
+        a0 = eph['a0']; a1 = eph['a1']; a2 = eph['a2']
+        tgd = eph.get("TGD", 0.0) or 0.0
 
-        # Thời gian tham chiếu đồng hồ (Toc). 
-        # Trong RINEX NAV, Epoch ở dòng 1 thường là Toc.
         toc = _datetime_to_sow(eph['epoch'])
 
-        # --- 1. Tính toán thời gian (t_k) ---
-        # t_k là thời gian chênh lệch so với thời gian tham chiếu t_oe
-        t_k = t_gps_sow - toe
-        # Xử lý trường hợp vượt qua ranh giới tuần (week crossover)
-        if t_k > 302400:
-            t_k -= 604800
-        elif t_k < -302400:
-            t_k += 604800
+        # ======= TIME DIFFERENCE (t_k) =======
+        t_k = t_sv - toe
+        if t_k > 302400: t_k -= 604800
+        elif t_k < -302400: t_k += 604800
 
-        # --- 2. Bán trục lớn (A) ---
+        # ======= ORBIT COMPUTATION =======
         A = sqrt_a * sqrt_a
-
-        # --- 3. Chuyển động trung bình ban đầu (n0) ---
-        n0 = math.sqrt(MU_GPS / (A**3))
-
-        # --- 4. Chuyển động trung bình đã hiệu chỉnh (n) ---
+        n0 = math.sqrt(MU_GPS / A**3)
         n = n0 + delta_n
-
-        # --- 5. Dị thường trung bình (M_k) ---
         M_k = m0 + n * t_k
 
-        # --- 6. Dị thường lệch tâm (E_k) - PP lặp Newton-Raphson ---
-        # Giải phương trình Kepler: f(E) = E - e*sin(E) - M_k = 0
-        # Đạo hàm: f'(E) = 1 - e*cos(E)
-        E_k = M_k # Giá trị khởi tạo (M_k là một giá trị khởi tạo tốt)
-        for _ in range(10): # Lặp tối đa 10 lần (thường chỉ cần 2-3 lần)
-            # Tính f(E_k) và f'(E_k)
-            f_E = E_k - e * math.sin(E_k) - M_k
-            f_prime_E = 1.0 - e * math.cos(E_k)
-            # Tính bước hiệu chỉnh (delta_E)
-            # delta_E = f(E_k) / f'(E_k)
-            # Tránh chia cho 0 (dù e < 1 nên f_prime_E luôn > 0 cho quỹ đạo elip)
-            if abs(f_prime_E) < 1e-15:
-                break # Thoát nếu đạo hàm quá nhỏ
-            delta_E = f_E / f_prime_E
-            # Cập nhật E_k
-            E_k = E_k - delta_E
-            # Kiểm tra hội tụ (khi bước hiệu chỉnh đã đủ nhỏ)
-            if abs(delta_E) < 1e-12:
-                break
+        # --- Solve Kepler ---
+        E_k = M_k
+        for _ in range(8):
+            d = (E_k - e*math.sin(E_k) - M_k) / (1 - e*math.cos(E_k))
+            E_k -= d
+            if abs(d) < 1e-13: break
 
-        # --- 7. Dị thường thực (nu_k) ---
-        # Sử dụng atan2 để đảm bảo đúng góc phần tư (Eq 3.19)
-        nu_k = math.atan2(
-            math.sqrt(1.0 - e**2) * math.sin(E_k),
-            math.cos(E_k) - e
-        )
+        nu_k = math.atan2(math.sqrt(1-e*e)*math.sin(E_k),
+                          math.cos(E_k)-e)
 
-        # --- 8. Argument of Latitude (Phi_k) ---
         Phi_k = nu_k + omega
 
-        # --- 9. Hiệu chỉnh bậc hai (Second Harmonic Perturbations) ---
-        sin_2Phik = math.sin(2 * Phi_k)
-        cos_2Phik = math.cos(2 * Phi_k)
+        sin2 = math.sin(2*Phi_k)
+        cos2 = math.cos(2*Phi_k)
 
-        delta_uk = cus * sin_2Phik + cuc * cos_2Phik # Hiệu chỉnh Argument of Latitude
-        delta_rk = crs * sin_2Phik + crc * cos_2Phik # Hiệu chỉnh bán kính
-        delta_ik = cis * sin_2Phik + cic * cos_2Phik # Hiệu chỉnh độ nghiêng
+        delta_u = cus*sin2 + cuc*cos2
+        delta_r = crs*sin2 + crc*cos2
+        delta_i = cis*sin2 + cic*cos2
 
-        # --- 10. Giá trị đã hiệu chỉnh ---
-        u_k = Phi_k + delta_uk # Argument of Latitude đã hiệu chỉnh
-        r_k = A * (1.0 - e * math.cos(E_k)) + delta_rk # Bán kính đã hiệu chỉnh
-        i_k = i0 + delta_ik + i_dot * t_k # Độ nghiêng đã hiệu chỉnh
+        u = Phi_k + delta_u
+        r = A*(1 - e*math.cos(E_k)) + delta_r
+        i = i0 + delta_i + i_dot*t_k
 
-        # --- 11. Vị trí vệ tinh trong mặt phẳng quỹ đạo (x_k', y_k') ---
-        x_k_prime = r_k * math.cos(u_k)
-        y_k_prime = r_k * math.sin(u_k)
+        x_orb = r * math.cos(u)
+        y_orb = r * math.sin(u)
 
-        # --- 12. Kinh độ điểm mọc đã hiệu chỉnh (Omega_k) ---
-        # (Eq 3.25)
-        Omega_k = omega0 + (omega_dot - OMEGA_E_DOT) * t_k - OMEGA_E_DOT * toe
+        Omega_k = omega0 + (omega_dot - OMEGA_E_DOT)*t_k - OMEGA_E_DOT*toe
 
-        # --- 13. Tọa độ ECEF (X_k, Y_k, Z_k) ---
-        # (Eq 3.26) - Phép quay 3D
-        cos_Omegak = math.cos(Omega_k)
-        sin_Omegak = math.sin(Omega_k)
-        cos_ik = math.cos(i_k)
-        sin_ik = math.sin(i_k)
-
-        X_k = x_k_prime * cos_Omegak - y_k_prime * cos_ik * sin_Omegak
-        Y_k = x_k_prime * sin_Omegak + y_k_prime * cos_ik * cos_Omegak
-        Z_k = y_k_prime * sin_ik
+        X = x_orb*math.cos(Omega_k) - y_orb*math.cos(i)*math.sin(Omega_k)
+        Y = x_orb*math.sin(Omega_k) + y_orb*math.cos(i)*math.cos(Omega_k)
+        Z = y_orb*math.sin(i)
 
         # ===========================================================
-        # --- TÍNH HIỆU CHỈNH ĐỒNG HỒ (CLOCK CORRECTION) ---
+        #        CLOCK CORRECTION — ĐÃ SỬA
         # ===========================================================
-        
-        # 1. Thời gian tính từ Toc
-        dt_clk = t_gps_sow - toc
+        dt_clk = t_sv - toc
         if dt_clk > 302400: dt_clk -= 604800
         elif dt_clk < -302400: dt_clk += 604800
 
-        # 2. Hiệu chỉnh đa thức (Polynomial Clock Correction)
-        # dt_bias = a0 + a1*dt + a2*dt^2
-        dts_poly = a0 + a1 * dt_clk + a2 * (dt_clk**2)
+        dts_poly = a0 + a1*dt_clk + a2*(dt_clk**2)
+        dts_rel  = F * e * sqrt_a * math.sin(E_k)
 
-        # 3. Hiệu chỉnh thuyết tương đối (Relativistic Correction)
-        # Do quỹ đạo elip, đồng hồ vệ tinh chạy nhanh/chậm theo vị trí
-        dts_rel = F * e * sqrt_a * math.sin(E_k)
+        dt_sat = dts_poly + dts_rel    # KHÔNG TRỪ TGD Ở ĐÂY
 
-        # 4. Total Group Delay (TGD)
-        # Quan trọng với người dùng đơn tần (L1 C/A)
-        dts_tgd = tgd
+        # ===========================================================
+        #        EARTH ROTATION CORRECTION
+        # ===========================================================
+        travel = math.sqrt(X*X + Y*Y + Z*Z) / c
+        theta = OMEGA_E_DOT * travel
 
-        # Tổng hợp: dt_sat = Poly + Relativistic - TGD
-        dt_sat = dts_poly + dts_rel - dts_tgd
+        X_rot = X*math.cos(theta) + Y*math.sin(theta)
+        Y_rot = -X*math.sin(theta) + Y*math.cos(theta)
+        Z_rot = Z
 
-        return (X_k, Y_k, Z_k, dt_sat)
+        return (X_rot, Y_rot, Z_rot, dt_sat)
 
-    except (KeyError, TypeError) as e:
-        print(f"Lỗi: Thiếu hoặc tham số ephemeris không hợp lệ - {e}", file=sys.stderr)
-        return (None, None, None, None)
     except Exception as e:
-        print(f"Lỗi trong quá trình tính toán vị trí vệ tinh: {e}", file=sys.stderr)
+        print(f"Lỗi tính vị trí vệ tinh: {e}", file=sys.stderr)
         return (None, None, None, None)
+
 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":
