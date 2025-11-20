@@ -33,11 +33,11 @@ if __name__ == "__main__":
             clock_bias_meters = final_solution[3]
             
             print("\n--- KẾT QUẢ TÍNH TOÁN (VỊ TRÍ MÁY THU) ---")
-            print(f"  Vị trí X: {x_receiver:,.3f} m")
-            print(f"  Vị trí Y: {y_receiver:,.3f} m")
-            print(f"  Vị trí Z: {z_receiver:,.3f} m")
-            print(f"  Sai lệch đồng hồ (c*dt_r): {clock_bias_meters:,.3f} m")
-            print(f"  (Nghĩa là đồng hồ máy thu chạy lệch ~ {clock_bias_meters / c * 1e9:,.1f} nano-second)")
+            print(f"  Vị trí X: {x_receiver:.3f} m")
+            print(f"  Vị trí Y: {y_receiver:.3f} m")
+            print(f"  Vị trí Z: {z_receiver:.3f} m")
+            print(f"  Sai lệch đồng hồ (c*dt_r): {clock_bias_meters:.3f} m")
+            print(f"  (Nghĩa là đồng hồ máy thu chạy lệch ~ {clock_bias_meters / c * 1e9:.1f} nano-second)")
         else:
             print("\nGiải hệ phương trình thất bại.")
 
