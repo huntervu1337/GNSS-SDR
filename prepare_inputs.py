@@ -22,31 +22,32 @@ c = 2.99792458e8            # Tốc độ ánh sáng (m/s)
 
 def datetime_to_gps_sow(dt_utc: datetime.datetime) -> Tuple[int, float]:
     """
-    Chuyển đổi datetime UTC sang Tuần GPS và Giây của Tuần (SOW).
+    Chuyển đổi datetime sang GPS Second of Week (SOW).
     
-    Lưu ý: Giờ GPS không có giây nhuận. Tính đến 2025 (năm trong file test.obs),
-    Giờ GPS chạy trước UTC 18 giây (GPS = UTC + 18s).
+    QUAN TRỌNG: 
+    - Nếu input là UTC, cần cộng giây nhuận.
+    - Nếu input LÀ GPS TIME (như trong file RINEX OBS có thẻ 'GPS'), KHÔNG CỘNG giây nhuận.
+    
+    Dựa vào header file test.obs: "TIME OF FIRST OBS ... GPS"
+    => Dữ liệu này đã là GPS Time.
     """
-    """
-    Theo chuẩn RINEX v3, thời gian ghi nhận trong file Observation (các dòng bắt đầu bằng >),
-    thường là thời gian UTC. Còn thời gian trong file Navigation là thời gian GPS
-    Do đó, code cần cộng thêm 18 giây để chuyển từ hệ UTC (của file Obs) sang hệ GPS (file Nav).
-    """
-    # Mốc thời gian GPS: 1980-01-06 00:00:00 UTC
+    # Mốc thời gian GPS: 1980-01-06 00:00:00
     gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
     
     if dt_utc.tzinfo is None:
         dt_utc = dt_utc.replace(tzinfo=datetime.timezone.utc)
 
-    # Chênh lệch thời gian so với mốc UTC
-    time_diff_utc = dt_utc - gps_epoch
+    # Tính khoảng cách thời gian
+    time_diff = dt_utc - gps_epoch
+    total_seconds = time_diff.total_seconds()
     
-    # Cộng thêm giây nhuận (18s) để có tổng giây GPS
-    # (TAI = UTC + 37s, GPS = TAI - 19s  => GPS = UTC + 18s)
-    LEAP_SECONDS = 18.0
-    total_gps_seconds = time_diff_utc.total_seconds() + LEAP_SECONDS
+    # --- SỬA LỖI 1: BỎ CỘNG GIÂY NHUẬN ---
+    # Vì file OBS của bạn đã ghi giờ GPS, nên không cộng 18s nữa.
+    # Nếu file là UTC thì mới cộng.
+    # total_gps_seconds = total_seconds + 18.0  <-- SAI với file này
+    total_gps_seconds = total_seconds 
     
-    SECONDS_IN_WEEK = 604800.0  # (7 * 24 * 60 * 60)
+    SECONDS_IN_WEEK = 604800.0 
     
     gps_week = int(total_gps_seconds // SECONDS_IN_WEEK)
     gps_sow = total_gps_seconds % SECONDS_IN_WEEK
