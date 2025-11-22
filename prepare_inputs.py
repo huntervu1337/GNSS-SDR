@@ -5,34 +5,64 @@ from read_rinex_nav import read_rinex_nav
 from read_rinex_obs import read_rinex_obs
 from cal_sat_pos import calculate_satellite_position
 
+# Hằng số tốc độ ánh sáng
 c = 2.99792458e8
 
 def datetime_to_gps_sow(dt):
+    """
+    Chuyển đổi datetime UTC sang GPS Week và Second of Week (SOW).
+    Lưu ý: Nếu dt input là UTC chuẩn, cần +18s giây nhuận để ra GPS Time.
+    Nhưng nếu file OBS đã ghi time hệ GPS thì không cần cộng.
+    (Code này giả định input đã được xử lý hoặc file OBS ghi time hệ GPS).
+    """
     gps_epoch = datetime.datetime(1980,1,6,tzinfo=datetime.timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
+    
     diff = dt - gps_epoch
+    # Tính SOW (phần lẻ của giây trong tuần)
     sow = diff.total_seconds() % 604800.0
+    # Tính GPS Week
     week = int(diff.total_seconds() // 604800.0)
     return week, sow
 
 
 def find_best_ephemeris(eph_list, t_s):
+    """
+    Tìm bản tin tinh lịch (ephemeris) phù hợp nhất cho thời điểm t_s.
+    Tiêu chí: Thời gian Toe gần t_s nhất và không quá 4 giờ.
+    """
     best = None
     mindt = 999999
     for eph in eph_list:
         toe = eph["Toe"]
+        # Tính khoảng cách thời gian, xử lý week crossover
         dt = abs(t_s - toe)
         if dt > 302400: dt = 604800 - dt
+        
         if dt < mindt:
             mindt = dt
             best = eph
+            
+    # Nếu bản tin quá cũ (> 4 giờ = 14400s), không sử dụng
     if mindt > 14400: 
         return None
     return best
 
 
 def prepare_basic_solver_inputs(nav_file, obs_file):
+    """
+    Đọc và chuẩn bị dữ liệu đầu vào cho bộ giải (Solver).
+    Quy trình:
+    1. Đọc file NAV và OBS.
+    2. Với mỗi epoch và mỗi vệ tinh:
+       - Lấy Pseudorange thô (C1C).
+       - Trừ TGD (Total Group Delay) khỏi Pseudorange (cho Single Frequency).
+       - Tính thời gian phát tín hiệu (Transmission Time).
+       - Tính tọa độ vệ tinh và sai số đồng hồ vệ tinh.
+    3. Gom nhóm các vệ tinh hợp lệ theo epoch.
+    """
+    # Đọc dữ liệu thô
     nav = read_rinex_nav(nav_file)
     obs = read_rinex_obs(obs_file)
 
@@ -40,6 +70,7 @@ def prepare_basic_solver_inputs(nav_file, obs_file):
 
     for epoch in obs:
         dt = epoch["time"]
+        # Chuyển đổi thời gian thu (Receiver Time) sang GPS SOW
         _, t_r = datetime_to_gps_sow(dt)
 
         epoch_struct = {
@@ -49,48 +80,64 @@ def prepare_basic_solver_inputs(nav_file, obs_file):
         }
 
         for prn, o in epoch["observations"].items():
-
+            # Chỉ xử lý vệ tinh GPS ('G') và có dữ liệu NAV
             if not prn.startswith("G"):
                 continue
             if prn not in nav:
                 continue
 
+            # Chỉ xử lý nếu có dữ liệu giả khoảng cách C1C (L1 C/A code)
             if "C1C" not in o:
                 continue
 
             rho_raw = o["C1C"]["value"]
 
-            # TGD-trừ trong pseudorange (single frequency)
+            # --- BƯỚC 1: Lấy TGD để hiệu chỉnh Pseudorange ---
+            # Tìm ephemeris sơ bộ (dựa trên t_r) để lấy TGD
             best_eph = find_best_ephemeris(nav[prn], t_r)
             if not best_eph: 
                 continue
 
+            # TGD (Total Group Delay): Độ trễ phần cứng giữa tần số L1 và L2.
+            # Người dùng đơn tần L1 CẦN trừ giá trị này khỏi pseudorange đo được.
             tgd = best_eph.get("TGD", 0.0) or 0.0
 
-            rho_corr = rho_raw - c*tgd   # ĐÃ SỬA
+            # Pseudorange đã hiệu chỉnh TGD
+            rho_corr = rho_raw - c*tgd
 
+            # --- BƯỚC 2: Ước tính thời gian phát (Transmission Time) ---
+            # Thời gian bay = Quãng đường / Tốc độ ánh sáng
             t_travel = rho_corr / c
+            # Thời gian phát (t_s) = Thời gian thu (t_r) - Thời gian bay
             t_s = t_r - t_travel
 
+            # --- BƯỚC 3: Tìm Ephemeris chính xác tại thời điểm phát ---
             eph = find_best_ephemeris(nav[prn], t_s)
             if not eph:
                 continue
 
-            X,Y,Z, dt_sat = calculate_satellite_position(eph, t_s)
+            # --- BƯỚC 4: Tính vị trí và đồng hồ vệ tinh ---
+            # Hàm trả về: Tọa độ (đã xoay Sagnac) và Sai số đồng hồ (đã tính tương đối tính)
+            X, Y, Z, dt_sat = calculate_satellite_position(eph, t_s)
+            
             if X is None:
                 continue
 
+            # Lưu dữ liệu sạch vào cấu trúc để Solver sử dụng
             epoch_struct["satellites"].append({
                 "prn": prn,
-                "pseudorange": rho_corr,
-                "sat_pos_ecef": (X,Y,Z),
-                "sat_clock_corr_meters": c * dt_sat
+                "pseudorange": rho_corr,       # Pseudorange đã trừ TGD
+                "sat_pos_ecef": (X, Y, Z),     # Vị trí vệ tinh tại t_s (hệ ECEF t_r)
+                "sat_clock_corr_meters": c * dt_sat # Sai số đồng hồ vệ tinh (đổi ra mét)
             })
 
+        # Chỉ giữ lại các epoch có đủ số lượng vệ tinh tối thiểu (4) để giải
         if len(epoch_struct["satellites"]) >= 4:
             epochs.append(epoch_struct)
 
     return epochs
+
+
 
 # --- VÍ DỤ SỬ DỤNG ---
 if __name__ == "__main__":

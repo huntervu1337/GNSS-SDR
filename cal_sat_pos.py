@@ -3,109 +3,181 @@ import sys
 import datetime
 from read_rinex_nav import *
 
-MU_GPS = 3.986005e14
-OMEGA_E_DOT = 7.2921151467e-5
-c = 2.99792458e8
-F = -4.442807633e-10
+# --- CÁC HẰNG SỐ VẬT LÝ & GPS (Theo ICD-GPS-200 / WGS-84) ---
+MU_GPS = 3.986005e14            # Hằng số hấp dẫn của Trái Đất (m^3/s^2)
+OMEGA_E_DOT = 7.2921151467e-5   # Tốc độ quay của Trái Đất (rad/s)
+c = 2.99792458e8                # Tốc độ ánh sáng trong chân không (m/s)
+F = -4.442807633e-10            # Hằng số cho hiệu chỉnh tương đối tính (sec/meter^(1/2))
 
 def _datetime_to_sow(dt):
+    """
+    Hàm phụ trợ: Chuyển đổi datetime thành Giây trong tuần GPS (SOW - Second of Week).
+    Lưu ý: Hàm này giả định đầu vào đã là giờ GPS (hoặc không quan tâm giây nhuận
+    nếu tính khoảng cách tương đối trong cùng hệ quy chiếu).
+    """
     gps_epoch = datetime.datetime(1980, 1, 6, tzinfo=datetime.timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
+    
+    # Tính tổng số giây từ mốc GPS Epoch
     delta = dt - gps_epoch
     total_sec = delta.total_seconds()
+    
+    # Chia lấy dư cho số giây trong 1 tuần (604800s) để ra SOW
     return total_sec % 604800.0
 
 
 def calculate_satellite_position(eph, t_sv):
     """
-    Tính vị trí vệ tinh tại t_sv (satellite transmission time)
-    + ĐÃ SỬA: clock correction dùng t_sv
-    + ĐÃ THÊM: Earth rotation correction
-    + ĐÃ SỬA: không trừ TGD trong dt_sat
+    Tính toán vị trí vệ tinh (ECEF) và hiệu chỉnh đồng hồ tại thời điểm phát tín hiệu.
+    
+    Args:
+        eph (dict): Dữ liệu tinh lịch (ephemeris) của vệ tinh.
+        t_sv (float): Thời điểm PHÁT tín hiệu (Transmission Time) theo giờ GPS (SOW).
+                      Giá trị này thường được tính: t_rx (thu) - pseudo_range/c.
+
+    Returns:
+        tuple: (X, Y, Z, dt_sat)
+            - X, Y, Z: Tọa độ vệ tinh trong hệ ECEF tại thời điểm phát, 
+                       đã được xoay để khớp với hệ quy chiếu tại thời điểm thu (Sagnac effect).
+            - dt_sat:  Sai số đồng hồ vệ tinh (Clock Bias) tính bằng giây.
+                       Đã bao gồm: Đa thức đồng hồ + Hiệu chỉnh tương đối.
+                       (Lưu ý: TGD được xử lý ở bên ngoài hoặc tùy chọn).
     """
     try:
-        # ======= LẤY THAM SỐ =======
-        sqrt_a = eph['sqrt_a']
-        e = eph['e']
-        m0 = eph['M0']
-        omega = eph['omega']
-        i0 = eph['i0']
-        omega0 = eph['Omega0']
-        delta_n = eph['Delta_n']
-        i_dot = eph['i_dot']
-        omega_dot = eph['Omega_dot']
-        cuc = eph['Cuc']; cus = eph['Cus']
-        crc = eph['Crc']; crs = eph['Crs']
-        cic = eph['Cic']; cis = eph['Cis']
+        # ===========================================================
+        # BƯỚC 0: TRÍCH XUẤT CÁC THAM SỐ TỪ TINH LỊCH (EPHEMERIS)
+        # ===========================================================
+        # Tham số quỹ đạo Kepler
+        sqrt_a = eph['sqrt_a']      # Căn bậc 2 bán trục lớn
+        e = eph['e']                # Độ lệch tâm (Eccentricity)
+        m0 = eph['M0']              # Dị thường trung bình (Mean Anomaly) tại Toe
+        omega = eph['omega']        # Argument of Perigee
+        i0 = eph['i0']              # Độ nghiêng quỹ đạo tại Toe
+        omega0 = eph['Omega0']      # Longitude of Ascending Node tại tuần GPS
+        
+        # Tham số nhiễu loạn và tốc độ thay đổi
+        delta_n = eph['Delta_n']    # Hiệu chỉnh chuyển động trung bình
+        i_dot = eph['i_dot']        # Tốc độ thay đổi độ nghiêng
+        omega_dot = eph['Omega_dot']# Tốc độ thay đổi Longitude of Ascending Node
+        
+        # Tham số hiệu chỉnh điều hòa (Harmonic Corrections)
+        cuc = eph['Cuc']; cus = eph['Cus'] # Cho Argument of Latitude
+        crc = eph['Crc']; crs = eph['Crs'] # Cho Bán kính quỹ đạo
+        cic = eph['Cic']; cis = eph['Cis'] # Cho Độ nghiêng
+        
+        # Thời gian tham chiếu quỹ đạo (Toe)
         toe = eph['Toe']
 
+        # Tham số đồng hồ (Clock)
         a0 = eph['a0']; a1 = eph['a1']; a2 = eph['a2']
+        
+        # Total Group Delay (TGD): Quan trọng cho người dùng đơn tần
         tgd = eph.get("TGD", 0.0) or 0.0
 
+        # Thời gian tham chiếu đồng hồ (Toc) - lấy từ epoch của bản tin
         toc = _datetime_to_sow(eph['epoch'])
 
-        # ======= TIME DIFFERENCE (t_k) =======
+        # ===========================================================
+        # BƯỚC 1: TÍNH TOÁN THỜI GIAN TRUYỀN DẪN (Time difference)
+        # ===========================================================
+        # t_k là thời gian từ thời điểm tham chiếu Toe đến thời điểm phát t_sv
         t_k = t_sv - toe
+        
+        # Xử lý trường hợp chuyển giao giữa các tuần (Week Crossover)
+        # Nếu chênh lệch quá lớn (> nửa tuần), điều chỉnh lại cho đúng
         if t_k > 302400: t_k -= 604800
         elif t_k < -302400: t_k += 604800
 
-        # ======= ORBIT COMPUTATION =======
+        # ===========================================================
+        # BƯỚC 2: TÍNH TOÁN QUỸ ĐẠO (Keplerian Orbit)
+        # ===========================================================
+        # Bán trục lớn (Semi-major axis)
         A = sqrt_a * sqrt_a
+        
+        # Chuyển động trung bình tính toán (Computed Mean Motion)
         n0 = math.sqrt(MU_GPS / A**3)
+        
+        # Chuyển động trung bình đã hiệu chỉnh
         n = n0 + delta_n
+        
+        # Dị thường trung bình (Mean Anomaly) tại t_sv
         M_k = m0 + n * t_k
 
-        # --- Solve Kepler ---
+        # --- Giải phương trình Kepler: M_k = E_k - e*sin(E_k) ---
+        # Sử dụng phương pháp lặp Newton-Raphson để tìm Dị thường tâm sai (Eccentric Anomaly) E_k
         E_k = M_k
-        for _ in range(8):
+        for _ in range(8): # Thường chỉ cần 3-4 vòng lặp là hội tụ
             d = (E_k - e*math.sin(E_k) - M_k) / (1 - e*math.cos(E_k))
             E_k -= d
             if abs(d) < 1e-13: break
 
+        # Dị thường thực (True Anomaly) v_k
         nu_k = math.atan2(math.sqrt(1-e*e)*math.sin(E_k),
                           math.cos(E_k)-e)
 
+        # Argument of Latitude (Phi_k) chưa hiệu chỉnh
         Phi_k = nu_k + omega
 
+        # --- Tính các hiệu chỉnh nhiễu loạn bậc 2 ---
         sin2 = math.sin(2*Phi_k)
         cos2 = math.cos(2*Phi_k)
 
-        delta_u = cus*sin2 + cuc*cos2
-        delta_r = crs*sin2 + crc*cos2
-        delta_i = cis*sin2 + cic*cos2
+        delta_u = cus*sin2 + cuc*cos2 # Hiệu chỉnh Argument of Latitude
+        delta_r = crs*sin2 + crc*cos2 # Hiệu chỉnh Bán kính
+        delta_i = cis*sin2 + cic*cos2 # Hiệu chỉnh Độ nghiêng
 
+        # Áp dụng hiệu chỉnh
         u = Phi_k + delta_u
-        r = A*(1 - e*math.cos(E_k)) + delta_r
-        i = i0 + delta_i + i_dot*t_k
+        r = A*(1 - e*math.cos(E_k)) + delta_r # Bán kính đã hiệu chỉnh
+        i = i0 + delta_i + i_dot*t_k          # Độ nghiêng đã hiệu chỉnh
 
+        # Tọa độ trong mặt phẳng quỹ đạo (Orbital Plane)
         x_orb = r * math.cos(u)
         y_orb = r * math.sin(u)
 
+        # Longitude of Ascending Node đã hiệu chỉnh (Omega_k)
+        # Tính đến chuyển động quay của Trái Đất trong thời gian t_k
         Omega_k = omega0 + (omega_dot - OMEGA_E_DOT)*t_k - OMEGA_E_DOT*toe
 
+        # Tọa độ ECEF TẠI THỜI ĐIỂM PHÁT (chưa tính Sagnac effect)
         X = x_orb*math.cos(Omega_k) - y_orb*math.cos(i)*math.sin(Omega_k)
         Y = x_orb*math.sin(Omega_k) + y_orb*math.cos(i)*math.cos(Omega_k)
         Z = y_orb*math.sin(i)
 
         # ===========================================================
-        #        CLOCK CORRECTION — ĐÃ SỬA
+        # BƯỚC 3: TÍNH HIỆU CHỈNH ĐỒNG HỒ (CLOCK CORRECTION)
         # ===========================================================
+        # Tính khoảng thời gian từ mốc Toc đến t_sv
         dt_clk = t_sv - toc
         if dt_clk > 302400: dt_clk -= 604800
         elif dt_clk < -302400: dt_clk += 604800
 
+        # 1. Sai số đa thức (Polynomial Offset + Drift + Aging)
         dts_poly = a0 + a1*dt_clk + a2*(dt_clk**2)
+        
+        # 2. Hiệu chỉnh thuyết tương đối (Relativistic Correction)
+        # Do quỹ đạo elip, vận tốc và thế năng hấp dẫn thay đổi gây ra giãn nở thời gian
         dts_rel  = F * e * sqrt_a * math.sin(E_k)
 
-        dt_sat = dts_poly + dts_rel    # KHÔNG TRỪ TGD Ở ĐÂY
+        # Tổng hợp sai số đồng hồ vệ tinh
+        # Lưu ý: Không trừ TGD ở đây nếu muốn xử lý tường minh ở prepare_inputs
+        dt_sat = dts_poly + dts_rel
 
         # ===========================================================
-        #        EARTH ROTATION CORRECTION
+        # BƯỚC 4: HIỆU CHỈNH QUAY TRÁI ĐẤT (SAGNAC EFFECT)
         # ===========================================================
+        # Trong thời gian tín hiệu bay từ vệ tinh xuống máy thu
+        # Trái Đất đã tự quay một góc nhỏ. Hệ tọa độ ECEF gắn với Trái Đất cũng quay theo.
+        # Cần xoay tọa độ vệ tinh (tại t_phát) sang hệ quy chiếu ECEF (tại t_thu).
+        
+        # Ước lượng thời gian bay (travel time)
         travel = math.sqrt(X*X + Y*Y + Z*Z) / c
+        
+        # Góc quay của Trái Đất trong thời gian đó
         theta = OMEGA_E_DOT * travel
 
+        # Phép xoay trục Z
         X_rot = X*math.cos(theta) + Y*math.sin(theta)
         Y_rot = -X*math.sin(theta) + Y*math.cos(theta)
         Z_rot = Z
@@ -115,6 +187,8 @@ def calculate_satellite_position(eph, t_sv):
     except Exception as e:
         print(f"Lỗi tính vị trí vệ tinh: {e}", file=sys.stderr)
         return (None, None, None, None)
+    
+
 
 
 # --- VÍ DỤ SỬ DỤNG ---
