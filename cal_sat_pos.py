@@ -161,7 +161,7 @@ def calculate_satellite_position(eph, t_sv):
         dts_rel  = F * e * sqrt_a * math.sin(E_k)
 
         # Tổng hợp sai số đồng hồ vệ tinh
-        # Lưu ý: Không trừ TGD ở đây nếu muốn xử lý tường minh ở prepare_inputs
+        # Lưu ý: Không trừ TGD ở đây, đã xử lý tường minh ở prepare_inputs
         dt_sat = dts_poly + dts_rel
 
         # ===========================================================
@@ -171,7 +171,7 @@ def calculate_satellite_position(eph, t_sv):
         # Trái Đất đã tự quay một góc nhỏ. Hệ tọa độ ECEF gắn với Trái Đất cũng quay theo.
         # Cần xoay tọa độ vệ tinh (tại t_phát) sang hệ quy chiếu ECEF (tại t_thu).
         
-        # Ước lượng thời gian bay (travel time)
+        # Ước lượng thời gian lan truyền tín hiệu (travel time)
         travel = math.sqrt(X*X + Y*Y + Z*Z) / c
         
         # Góc quay của Trái Đất trong thời gian đó
