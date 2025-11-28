@@ -1,5 +1,6 @@
 from prepare_inputs import *
 from solve_navigation_equations import *
+from coord_transform import *
 
 if __name__ == "__main__":
     
@@ -38,6 +39,15 @@ if __name__ == "__main__":
             print(f"  Vị trí Z: {z_receiver} m")
             print(f"  Sai lệch đồng hồ (c*dt_r): {clock_bias_meters:} m")
             print(f"  (Nghĩa là đồng hồ máy thu chạy lệch ~ {clock_bias_meters / c * 1e9} nano-second)")
+            
+            coordinate = ecef_to_lla(x_receiver, y_receiver, z_receiver)
+            print("\n--- KẾT QUẢ TRONG TOẠ ĐỘ ĐỊA LÝ ---")
+            lat = coordinate[0]
+            lon = coordinate[1]
+            h = coordinate[2]
+            print(f"Latitude  : {lat} degrees")
+            print(f"Longitude : {lon} degrees")
+            print(f"Height    : {h} meters")
         else:
             print("\nGiải hệ phương trình thất bại.")
 
