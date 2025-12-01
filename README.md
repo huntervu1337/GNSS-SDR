@@ -32,12 +32,8 @@ Dự án được thực hiện dựa trên các thuật toán nền tảng từ
 
 ## 🛠️ Yêu Cầu Cài Đặt
 
-Chương trình yêu cầu Python 3.x và thư viện `numpy` để xử lý ma trận.
+Chương trình yêu cầu Python 3.x và thư viện `numpy` để xử lý ma trận; `pyserial` `pyubx2` dê đoc dư liêu tư COM port;
 
-```bash
-pip install numpy
-```
-hoặc
 ```bash
 pip install -r requirements.txt
 ```

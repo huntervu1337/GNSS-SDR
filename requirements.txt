@@ -1,1 +1,5 @@
 numpy==2.3.4
+pynmeagps==1.0.56
+pyrtcm==1.1.10
+pyserial==3.5
+pyubx2==1.2.59
