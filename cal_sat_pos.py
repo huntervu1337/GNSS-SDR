@@ -164,25 +164,7 @@ def calculate_satellite_position(eph, t_sv):
         # Lưu ý: Không trừ TGD ở đây, đã xử lý tường minh ở prepare_inputs
         dt_sat = dts_poly + dts_rel
 
-        # ===========================================================
-        # BƯỚC 4: HIỆU CHỈNH QUAY TRÁI ĐẤT (SAGNAC EFFECT)
-        # ===========================================================
-        # Trong thời gian tín hiệu bay từ vệ tinh xuống máy thu
-        # Trái Đất đã tự quay một góc nhỏ. Hệ tọa độ ECEF gắn với Trái Đất cũng quay theo.
-        # Cần xoay tọa độ vệ tinh (tại t_phát) sang hệ quy chiếu ECEF (tại t_thu).
-        
-        # Ước lượng thời gian lan truyền tín hiệu (travel time)
-        travel = math.sqrt(X*X + Y*Y + Z*Z) / c
-        
-        # Góc quay của Trái Đất trong thời gian đó
-        theta = OMEGA_E_DOT * travel
-
-        # Phép xoay trục Z
-        X_rot = X*math.cos(theta) + Y*math.sin(theta)
-        Y_rot = -X*math.sin(theta) + Y*math.cos(theta)
-        Z_rot = Z
-
-        return (X_rot, Y_rot, Z_rot, dt_sat)
+        return (X, Y, Z, dt_sat)
 
     except Exception as e:
         print(f"Lỗi tính vị trí vệ tinh: {e}", file=sys.stderr)
