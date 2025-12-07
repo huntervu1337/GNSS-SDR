@@ -7,6 +7,7 @@ from cal_sat_pos import calculate_satellite_position
 
 # Hằng số tốc độ ánh sáng
 c = 2.99792458e8
+OMEGA_E_DOT = 7.2921151467e-5
 
 def datetime_to_gps_sow(dt):
     """
@@ -119,6 +120,24 @@ def prepare_basic_solver_inputs(nav_file, obs_file):
             # --- BƯỚC 4: Tính vị trí và đồng hồ vệ tinh ---
             # Hàm trả về: Tọa độ (đã xoay Sagnac) và Sai số đồng hồ (đã tính tương đối tính)
             X, Y, Z, dt_sat = calculate_satellite_position(eph, t_s)
+
+            # ===========================================================
+            # BƯỚC 5: HIỆU CHỈNH QUAY TRÁI ĐẤT (SAGNAC EFFECT)
+            # ===========================================================
+            # Trong thời gian tín hiệu bay từ vệ tinh xuống máy thu
+            # Trái Đất đã tự quay một góc nhỏ. Hệ tọa độ ECEF gắn với Trái Đất cũng quay theo.
+            # Cần xoay tọa độ vệ tinh (tại t_phát) sang hệ quy chiếu ECEF (tại t_thu).
+            
+            # Ước lượng thời gian lan truyền tín hiệu (travel time)
+            # t_travel = rho_corr / c
+            
+            # Góc quay của Trái Đất trong thời gian đó
+            theta = OMEGA_E_DOT * t_travel
+
+            # Phép xoay trục Z
+            X_rot = X*math.cos(theta) + Y*math.sin(theta)
+            Y_rot = -X*math.sin(theta) + Y*math.cos(theta)
+            Z_rot = Z
             
             if X is None:
                 continue
@@ -127,7 +146,7 @@ def prepare_basic_solver_inputs(nav_file, obs_file):
             epoch_struct["satellites"].append({
                 "prn": prn,
                 "pseudorange": rho_corr,       # Pseudorange đã trừ TGD
-                "sat_pos_ecef": (X, Y, Z),     # Vị trí vệ tinh tại t_s (hệ ECEF t_r)
+                "sat_pos_ecef": (X_rot, Y_rot, Z_rot),     # Vị trí vệ tinh tại t_s (hệ ECEF t_r)
                 "sat_clock_corr_meters": c * dt_sat # Sai số đồng hồ vệ tinh (đổi ra mét)
             })
 
